@@ -162,6 +162,9 @@ ol.steps.sm li::before{background:var(--blue);color:#fff}
 
 figure.sk{margin:14px 0 0;max-width:640px}figure.sk figcaption{font-size:.85rem;color:var(--mute);margin-top:6px}
 
+sup,sub{font-size:.72em;line-height:0}
+code sup,code sub{font-size:.75em}
+
 </style>
 <script>
 /* ===== pure logic helpers (no DOM) ===== */
@@ -1438,7 +1441,7 @@ const SK = (() => {
     const poly = (pts, fill) => el('path', { d: 'M' + pts.map(q => q[0].toFixed(1) + ' ' + q[1].toFixed(1)).join(' L') + 'Z', fill, opacity: .9 });
     const d = {
       el, stroke, poly,
-      t(x, y, s, o = {}) { const e = el('text', { x, y, 'text-anchor': o.a || 'middle', 'font-size': o.s || 17, fill: o.c || INK, 'font-family': "'Caveat','Patrick Hand','Comic Sans MS',cursive", 'font-weight': o.b ? 700 : 400 }); String(s).split('\n').forEach((ln, i) => { const ts = document.createElementNS(NS_, 'tspan'); ts.setAttribute('x', x); ts.setAttribute('dy', i ? (o.s || 17) * 1.1 : 0); ts.textContent = ln; e.append(ts); }); return e; },
+      t(x, y, s, o = {}) { const e = el('text', { x, y, 'text-anchor': o.a || 'middle', 'font-size': o.s || 17, fill: o.c || INK, 'font-family': "'Caveat','Patrick Hand','Comic Sans MS',cursive", 'font-weight': o.b ? 700 : 400 }); String(s).split('\n').forEach((ln, i) => { const ts = document.createElementNS(NS_, 'tspan'); ts.setAttribute('x', x); ts.setAttribute('dy', i ? (o.s || 17) * 1.1 : 0); const parts = ln.split(/(_[A-Za-z0-9]+)/); let shifted = false; parts.forEach(pt => { if (!pt) return; const sp = document.createElementNS(NS_, 'tspan'); if (pt[0] === '_' && pt.length > 1) { sp.setAttribute('dy', 5); sp.setAttribute('font-size', (o.s || 17) * 0.7); sp.textContent = pt.slice(1); shifted = true; } else { if (shifted) { sp.setAttribute('dy', -5); shifted = false; } sp.textContent = pt; } ts.append(sp); }); e.append(ts); }); return e; },
       rect(x, y, ww, hh, fi, txt, o = {}) { const p = [[x, y], [x + ww, y], [x + ww, y + hh], [x, y + hh], [x, y]]; if (fi != null) poly(p, FILLS[fi]); stroke(p); if (txt != null) d.t(x + ww / 2, y + hh / 2 + 5, txt, { s: o.s || 18, b: o.b }); },
       circ(cx, cy, rr, fi, txt, o = {}) { const p = []; for (let i = 0; i <= 28; i++) { const a = i / 28 * 2 * Math.PI; p.push([cx + Math.cos(a) * rr, cy + Math.sin(a) * (o.ry || rr)]); } if (fi != null) poly(p, FILLS[fi]); stroke(p); if (txt != null) d.t(cx, cy + 5, txt, { s: o.s || 18, b: o.b }); },
       line(pts, o) { stroke(pts, o); },
@@ -1882,6 +1885,39 @@ function tSketch(c, body) {
     h('p', { class: 'small mute' }, 'The same chart sits at the end of this chapter in your Notion notes.')));
 }
 
+
+/* ---- math typesetting: ^ and _ become real superscripts / subscripts, Q+ becomes Q⁺ ---- */
+function mathHTML(str) {
+  let res = '';
+  for (let i = 0; i < str.length;) {
+    const ch = str[i], prev = i ? str[i - 1] : '';
+    if ((ch === '^' || ch === '_') && /[A-Za-z0-9)]/.test(prev)) {
+      let j = i + 1, inner = null, next = i + 1;
+      if (str[j] === '(') { let d = 0, k = j; for (; k < str.length; k++) { if (str[k] === '(') d++; else if (str[k] === ')') { d--; if (!d) break; } } if (k < str.length) { inner = str.slice(j + 1, k); next = k + 1; } }
+      if (inner === null) { const m = /^[−+-]?[A-Za-z0-9]+/.exec(str.slice(j)); if (m) { inner = m[0]; next = j + m[0].length; } }
+      if (inner !== null) { const tg = ch === '^' ? 'sup' : 'sub'; res += '<' + tg + '>' + mathHTML(inner) + '</' + tg + '>'; i = next; continue; }
+    }
+    if (ch === 'Q' && str[i + 1] === '+' && !/[A-Za-z0-9(]/.test(str[i + 2] || ' ') && !/[A-Za-z0-9]/.test(prev)) { res += 'Q<sup>+</sup>'; i += 2; continue; }
+    res += esc(ch); i++;
+  }
+  return res;
+}
+const MATH_RE = /[A-Za-z0-9)][\^_][(A-Za-z0-9+−-]|(^|[^A-Za-z0-9])Q\+(?![A-Za-z0-9(])/;
+function fixMath(root) {
+  const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, { acceptNode(n) {
+    if (!MATH_RE.test(n.nodeValue)) return NodeFilter.FILTER_REJECT;
+    for (let p = n.parentNode; p && p !== document.body; p = p.parentNode) { const t = p.nodeName; if (t === 'SCRIPT' || t === 'STYLE' || t === 'TEXTAREA' || t === 'svg' || t === 'SUP' || t === 'SUB') return NodeFilter.FILTER_REJECT; }
+    return NodeFilter.FILTER_ACCEPT; } });
+  const list = []; while (w.nextNode()) list.push(w.currentNode);
+  list.forEach(n => { const tmp = document.createElement('span'); tmp.innerHTML = mathHTML(n.nodeValue); n.replaceWith(...tmp.childNodes); });
+}
+let mathObs = null;
+function startMath() {
+  const m = document.querySelector('main'); if (!m || mathObs) return;
+  mathObs = new MutationObserver(muts => { mathObs.disconnect(); try { muts.forEach(mu => { mu.addedNodes.forEach(n => { if (n.nodeType === 1) fixMath(n); else if (n.nodeType === 3 && n.parentNode) fixMath(n.parentNode); }); }); } finally { mathObs.observe(m, { childList: true, subtree: true }); } });
+  mathObs.observe(m, { childList: true, subtree: true });
+}
+
 /* ---- boot ---- */
 function boot() {
   document.body.append(
@@ -1894,6 +1930,7 @@ function boot() {
   applyTheme(); buildNav();
   const m = /^#ch(\d+)$/.exec(location.hash); const last = store.get('last', null);
   if (m && CH.some(c => c.n === +m[1])) go(+m[1]); else if (last && CH.some(c => c.n === last.cur)) { tab = last.tab; go(last.cur, last.tab); } else go(0);
+  startMath(); fixMath($('main'));
   paintProgress();
 }
 const thLabel = () => ({ auto: '◐ Auto', light: '☀ Light', dark: '☾ Dark' })[theme];
